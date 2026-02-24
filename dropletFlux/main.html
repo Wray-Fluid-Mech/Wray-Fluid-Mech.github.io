@@ -50,7 +50,8 @@
       <div>
         <h1>Two-droplet evaporative flux</h1>
         <div class="subtitle">
-          
+          Fast, interactive visualisation of the evaporation flux on two identical circular droplets.
+          Drag <code>b</code> to change the separation; the flux is only defined on the droplet footprints.
         </div>
       </div>
       <div class="pill" id="status">initialising…</div>
@@ -74,7 +75,7 @@
           <div class="toggles">
             <label><input id="showContours" type="checkbox" checked> Show</label>
             <label><input id="showFootprints" type="checkbox" checked> Footprints</label>
-            <label><input id="liveContours" type="checkbox"> Live contours</label>
+            <label title="If enabled, the plot updates while you drag sliders (can be slower on some machines)."><input id="liveContours" type="checkbox"> Live updates</label>
           </div>
           <div class="toggles">
             <label><input id="logShade" type="checkbox" checked> Log shading</label>

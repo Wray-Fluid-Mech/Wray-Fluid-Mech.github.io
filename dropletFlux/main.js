@@ -1,27 +1,43 @@
 import createModule from "./flux_pair.mjs";
 
+// -------------------- tiny DOM helpers --------------------
 const $ = (s) => document.querySelector(s);
-const setStatus = (t) => { $("#status").textContent = t; };
+const setStatus = (t) => {
+  const el = $("#status");
+  if (el) el.textContent = t;
+};
 
-function waitForPlotly() {
+function waitForPlotly(timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
     const t0 = performance.now();
     const tick = () => {
-      if (window.Plotly) return resolve(window.Plotly);
-      if (performance.now() - t0 > 8000) return reject(new Error("Plotly failed to load"));
+      if (globalThis.Plotly) return resolve(globalThis.Plotly);
+      if (performance.now() - t0 > timeoutMs) return reject(new Error("Plotly failed to load"));
       requestAnimationFrame(tick);
     };
     tick();
   });
 }
 
+function debounce(fn, ms) {
+  let t = null;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
+
+// -------------------- numerics helpers --------------------
 const RED_BLUE = [
   [0.0, "rgb(0, 80, 200)"],
   [0.5, "rgb(220, 235, 255)"],
   [1.0, "rgb(200, 30, 30)"]
 ];
 
-function clampMinB(b, a) { return Math.max(b, 2 * a + 1e-6); }
+function clampMinB(b, a) {
+  // hard floor so the discs never overlap
+  return Math.max(b, 2 * a + 1e-6);
+}
 
 function fillZ2D(grid, nx, ny, z2d) {
   let zmin = +Infinity, zmax = -Infinity;
@@ -34,10 +50,15 @@ function fillZ2D(grid, nx, ny, z2d) {
         row[i] = v;
         if (v < zmin) zmin = v;
         if (v > zmax) zmax = v;
-      } else row[i] = null;
+      } else {
+        row[i] = null;
+      }
     }
   }
-  if (!Number.isFinite(zmin)) { zmin = 0; zmax = 1; }
+  if (!Number.isFinite(zmin)) {
+    zmin = 0;
+    zmax = 1;
+  }
   return { zmin, zmax };
 }
 
@@ -66,13 +87,17 @@ function fillLogShift(z2d, out2d, Jmin, eps) {
     const out = out2d[j];
     for (let i = 0; i < row.length; i++) {
       const v = row[i];
-      if (v === null) { out[i] = null; continue; }
+      if (v === null) {
+        out[i] = null;
+        continue;
+      }
       out[i] = Math.log(Math.max(v - Jmin, 0) + eps);
     }
   }
 }
 
 function computeViewRanges(gd, a, b, zoomA) {
+  // centre on the left droplet so the "near field" is always in view
   const cx = -0.5 * b;
   const rect = gd.getBoundingClientRect();
   const aspect = rect.height / Math.max(1, rect.width);
@@ -88,12 +113,14 @@ function scheduleIdle(fn, fallbackMs = 0) {
   return window.setTimeout(fn, fallbackMs);
 }
 
-// Chunked conversion so apply step doesn't freeze UI
+// Chunked conversion so applying refined buffers doesn't freeze the UI.
 async function flatTo2DNullChunked(flat, nx, ny, rowsPerYield = 12, shouldAbort = () => false) {
   const out = new Array(ny);
   let k = 0;
+
   for (let j = 0; j < ny; j++) {
     if (shouldAbort()) return null;
+
     const row = new Array(nx);
     for (let i = 0; i < nx; i++, k++) {
       const v = flat[k];
@@ -105,10 +132,11 @@ async function flatTo2DNullChunked(flat, nx, ny, rowsPerYield = 12, shouldAbort 
       await new Promise((r) => requestAnimationFrame(r));
     }
   }
+
   return out;
 }
 
-// --- Ghost overlay (no Plotly calls during drag) ---
+// -------------------- Ghost overlay (no Plotly calls during drag) --------------------
 function ensureGhostOverlay(gd) {
   if (getComputedStyle(gd).position === "static") gd.style.position = "relative";
 
@@ -126,18 +154,17 @@ function ensureGhostOverlay(gd) {
   svg.style.zIndex = "20";
   svg.style.display = "none";
 
-  const c1 = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-  const c2 = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-  for (const c of [c1, c2]) {
+  const mk = (id) => {
+    const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    c.id = id;
     c.setAttribute("fill", "none");
     c.setAttribute("stroke", "rgba(255,80,80,0.95)");
     c.setAttribute("stroke-width", "2.6");
     c.setAttribute("stroke-dasharray", "6 5");
-  }
-  c1.id = "ghost1";
-  c2.id = "ghost2";
-  svg.appendChild(c1);
-  svg.appendChild(c2);
+    return c;
+  };
+  svg.appendChild(mk("ghost1"));
+  svg.appendChild(mk("ghost2"));
 
   gd.appendChild(svg);
   return svg;
@@ -221,23 +248,22 @@ async function main() {
   const a = 1.0;
   const gd = $("#plot");
 
-  // Coarse grids
-  const nxH = 360, nyH = 240;
-  const nH = nxH * nyH;
-  const ptrH = mod._malloc(nH * 8);
-  const zH = Array.from({ length: nyH }, () => Array(nxH).fill(null));
-  const zHlog = Array.from({ length: nyH }, () => Array(nxH).fill(null));
+  // ---- allocate reusable WASM-backed grids ----
+  function allocGrid(nx, ny) {
+    const n = nx * ny;
+    const ptr = mod._malloc(n * 8);
+    const z = Array.from({ length: ny }, () => Array(nx).fill(null));
+    const zlog = Array.from({ length: ny }, () => Array(nx).fill(null));
+    return { nx, ny, n, ptr, z, zlog };
+  }
 
-  const nxC = 140, nyC = 95;
-  const nC = nxC * nyC;
-  const ptrC = mod._malloc(nC * 8);
-  const zC = Array.from({ length: nyC }, () => Array(nxC).fill(null));
-  const zClog = Array.from({ length: nyC }, () => Array(nxC).fill(null));
+  const gridH = allocGrid(360, 240);
+  const gridC = allocGrid(140, 95);
 
   // Plotly traces
   const heat = {
     type: "heatmap",
-    z: zH,
+    z: gridH.z,
     x0: 0, dx: 1,
     y0: 0, dy: 1,
     colorscale: RED_BLUE,
@@ -248,7 +274,7 @@ async function main() {
 
   const cont = {
     type: "contour",
-    z: zClog,
+    z: gridC.zlog,
     x0: 0, dx: 1,
     y0: 0, dy: 1,
     showscale: false,
@@ -273,19 +299,27 @@ async function main() {
     shapes: []
   };
 
-  const config = { responsive: true, displayModeBar: true, modeBarButtonsToRemove: ["select2d","lasso2d"] };
+  const config = {
+    responsive: true,
+    displayModeBar: true,
+    modeBarButtonsToRemove: ["select2d", "lasso2d"]
+  };
+
   await Plotly.newPlot(gd, [heat, cont], layout, config);
 
   // Ghost overlay
   const ghost = ensureGhostOverlay(gd);
   setOverlayViewBox(ghost, gd);
 
-  // Cached heap view
+  // Cached heap view (WASM memory may grow)
   let heapBuf = null;
   let heapF64 = null;
   function getHeapF64() {
     const buf = mod.wasmMemory.buffer;
-    if (buf !== heapBuf) { heapBuf = buf; heapF64 = new Float64Array(buf); }
+    if (buf !== heapBuf) {
+      heapBuf = buf;
+      heapF64 = new Float64Array(buf);
+    }
     return heapF64;
   }
 
@@ -298,8 +332,8 @@ async function main() {
 
   // Interaction tracking
   let userActiveUntil = 0;
-  function noteUserActivity() { userActiveUntil = performance.now() + 900; } // ms
-  function userIsActive() { return performance.now() < userActiveUntil; }
+  const noteUserActivity = () => { userActiveUntil = performance.now() + 900; };
+  const userIsActive = () => performance.now() < userActiveUntil;
 
   // State
   const state = {
@@ -312,48 +346,57 @@ async function main() {
 
   let isRendering = false;
   let needsRerender = false;
-  let ghostActive = false;
 
+  // Drag UX
+  let ghostActive = false;
+  let bDragging = false;
+  let suppressNextBChange = false;
+
+  // Contour scheduling
   let contourToken = 0;
   let contourTimer = null;
 
+  // -------------------- UI readouts --------------------
   function updateReadouts() {
     const b = clampMinB(Number(bSlider.value), a);
     const zoomA = Number(zoomSlider.value);
     const ncont = Number(ncontSlider.value);
-    bVal.textContent = `b=${b.toFixed(2)} (2a=${(2*a).toFixed(2)})`;
-    zoomVal.textContent = `±${zoomA.toFixed(1)}a`;
-    contVal.textContent = `${ncont} levels`;
+    if (bVal) bVal.textContent = `b=${b.toFixed(2)} (2a=${(2 * a).toFixed(2)})`;
+    if (zoomVal) zoomVal.textContent = `±${zoomA.toFixed(1)}a`;
+    if (contVal) contVal.textContent = `${ncont} levels`;
   }
 
-  async function hideContoursNow() {
-    await Plotly.restyle(gd, { visible: [false] }, [1]);
+  // -------------------- Plotly helpers --------------------
+  function hideContoursNow() {
+    return Plotly.restyle(gd, { visible: [false] }, [1]).catch(console.error);
   }
 
-  async function restoreContoursVisibility() {
-    await Plotly.restyle(gd, { visible: [showContours.checked ? true : false] }, [1]);
+  function setContoursVisible(show) {
+    return Plotly.restyle(gd, { visible: [!!show] }, [1]).catch(console.error);
   }
 
+  // -------------------- Contours --------------------
   function scheduleContours(delayMs) {
     clearTimeout(contourTimer);
     const myToken = ++contourToken;
 
     if (!showContours.checked) {
-      restoreContoursVisibility();
+      state.contFrozen = null;
+      hideContoursNow();
       return;
     }
 
     contourTimer = setTimeout(() => {
       scheduleIdle(() => {
         if (myToken !== contourToken) return;
-        updateContours();
+        updateContours().catch(console.error);
       }, 0);
     }, delayMs);
   }
 
   async function updateContours() {
     if (!showContours.checked) {
-      await restoreContoursVisibility();
+      await setContoursVisible(false);
       return;
     }
 
@@ -364,24 +407,25 @@ async function main() {
     const ranges = state.rangesRendered ?? computeViewRanges(gd, a, b, zoomA);
     const { xmin, xmax, ymin, ymax } = ranges;
 
-    const dxC = (xmax - xmin) / (nxC - 1);
-    const dyC = (ymax - ymin) / (nyC - 1);
+    const dxC = (xmax - xmin) / (gridC.nx - 1);
+    const dyC = (ymax - ymin) / (gridC.ny - 1);
 
-    fill_flux_pair(a, b, nxC, nyC, xmin, xmax, ymin, ymax, ptrC);
+    fill_flux_pair(a, b, gridC.nx, gridC.ny, xmin, xmax, ymin, ymax, gridC.ptr);
     const heap = getHeapF64();
-    const gridC = heap.subarray(ptrC >> 3, (ptrC >> 3) + nC);
+    const flat = heap.subarray(gridC.ptr >> 3, (gridC.ptr >> 3) + gridC.n);
 
-    const { zmin, zmax } = fillZ2D(gridC, nxC, nyC, zC);
+    const { zmin, zmax } = fillZ2D(flat, gridC.nx, gridC.ny, gridC.z);
 
     const span = Math.max(1e-12, (zmax - zmin));
     const eps = 1e-12 * span + 1e-12;
 
-    fillLogShift(zC, zClog, zmin, eps);
+    fillLogShift(gridC.z, gridC.zlog, zmin, eps);
 
+    // min/max for contouring (in log-shifted space)
     let Lmin = +Infinity, Lmax = -Infinity;
-    for (let j = 0; j < nyC; j++) {
-      const row = zClog[j];
-      for (let i = 0; i < nxC; i++) {
+    for (let j = 0; j < gridC.ny; j++) {
+      const row = gridC.zlog[j];
+      for (let i = 0; i < gridC.nx; i++) {
         const v = row[i];
         if (v !== null && Number.isFinite(v)) {
           if (v < Lmin) Lmin = v;
@@ -389,7 +433,10 @@ async function main() {
         }
       }
     }
-    if (!Number.isFinite(Lmin) || !Number.isFinite(Lmax) || !(Lmax > Lmin)) { Lmin = 0; Lmax = 1; }
+    if (!Number.isFinite(Lmin) || !Number.isFinite(Lmax) || !(Lmax > Lmin)) {
+      Lmin = 0;
+      Lmax = 1;
+    }
 
     const start = Lmin;
     const end = Lmax;
@@ -400,7 +447,7 @@ async function main() {
     setStatus("updating contours…");
 
     await Plotly.restyle(gd, {
-      z: [zClog],
+      z: [gridC.zlog],
       x0: [xmin], dx: [dxC],
       y0: [ymin], dy: [dyC],
       "contours.start": [start],
@@ -409,13 +456,14 @@ async function main() {
       visible: [false]
     }, [1]);
 
-    await restoreContoursVisibility();
+    // If the user toggled contours off mid-update, honour that.
+    await setContoursVisible(showContours.checked);
     setStatus("ready");
 
     scheduleRefine();
   }
 
-  // ---- Refinement scheduling + apply (idle only) ----
+  // -------------------- Refinement --------------------
   function cancelRefine() {
     refineJobId++;
     pendingRefine = null;
@@ -435,6 +483,7 @@ async function main() {
 
     const jobId = ++refineJobId;
 
+    // refined grid sizes (kept in worker)
     const nxH2 = 720, nyH2 = 480;
     const nxC2 = 280, nyC2 = 190;
 
@@ -470,12 +519,11 @@ async function main() {
 
       // Don't apply while interacting; reschedule
       if (ghostActive || isRendering || userIsActive()) {
-        scheduleRefine(); // try again later
+        scheduleRefine();
         return;
       }
 
       scheduleIdle(() => {
-        // Re-check at execution time
         if (ghostActive || isRendering || userIsActive()) {
           scheduleRefine();
           return;
@@ -493,13 +541,12 @@ async function main() {
     if (!state.rangesRendered || !state.shadeFrozen || !state.contFrozen) return;
 
     const shouldAbort = () => ghostActive || isRendering || userIsActive() || msg.jobId !== refineJobId;
-
     const { xmin, xmax, ymin, ymax } = state.rangesRendered;
 
     // Heat
     const heatFlat = new Float32Array(msg.heatBuf);
     const zRefined = await flatTo2DNullChunked(heatFlat, msg.nxH, msg.nyH, 10, shouldAbort);
-    if (!zRefined) return; // aborted due to interaction
+    if (!zRefined) return;
 
     const dxH2 = (xmax - xmin) / (msg.nxH - 1);
     const dyH2 = (ymax - ymin) / (msg.nyH - 1);
@@ -522,7 +569,7 @@ async function main() {
       const dxC2 = (xmax - xmin) / (msg.nxC - 1);
       const dyC2 = (ymax - ymin) / (msg.nyC - 1);
 
-      await Plotly.restyle(gd, { visible: [false] }, [1]);
+      await hideContoursNow();
       await Plotly.restyle(gd, {
         z: [zContRefined],
         x0: [xmin], dx: [dxC2],
@@ -531,24 +578,43 @@ async function main() {
         "contours.end": [state.contFrozen.end],
         "contours.size": [state.contFrozen.size]
       }, [1]);
-      await restoreContoursVisibility();
+      await setContoursVisible(true);
     }
   }
 
   refineWorker.onmessage = (ev) => {
     const msg = ev.data;
-    if (!msg || msg.type !== "refined") return;
-    if (msg.jobId !== refineJobId) return;
+    if (!msg) return;
 
-    pendingRefine = msg;
-    scheduleApplyRefine();
+    if (msg.type === "refined") {
+      if (msg.jobId !== refineJobId) return;
+      pendingRefine = msg;
+      scheduleApplyRefine();
+      return;
+    }
+
+    if (msg.type === "error") {
+      // Helpful for debugging, but doesn't interrupt the UI.
+      console.error("refine worker error:", msg);
+      return;
+    }
   };
 
-  async function renderFull() {
-    if (isRendering) { needsRerender = true; return; }
+  refineWorker.onerror = (e) => {
+    console.error("refine worker crashed:", e);
+  };
+
+  // -------------------- Rendering --------------------
+  async function renderFull({ contourDelayMs = 0 } = {}) {
+    if (isRendering) {
+      needsRerender = true;
+      return;
+    }
+
     isRendering = true;
     setStatus("rendering…");
 
+    // Once we commit to a render, we hide the ghost.
     ghostActive = false;
     setGhost(ghost, false);
     cancelRefine();
@@ -567,28 +633,29 @@ async function main() {
 
       const { xmin, xmax, ymin, ymax } = ranges;
 
-      const dxH = (xmax - xmin) / (nxH - 1);
-      const dyH = (ymax - ymin) / (nyH - 1);
+      const dxH = (xmax - xmin) / (gridH.nx - 1);
+      const dyH = (ymax - ymin) / (gridH.ny - 1);
 
-      fill_flux_pair(a, b, nxH, nyH, xmin, xmax, ymin, ymax, ptrH);
+      fill_flux_pair(a, b, gridH.nx, gridH.ny, xmin, xmax, ymin, ymax, gridH.ptr);
       const heap = getHeapF64();
-      const gridH = heap.subarray(ptrH >> 3, (ptrH >> 3) + nH);
+      const flat = heap.subarray(gridH.ptr >> 3, (gridH.ptr >> 3) + gridH.n);
 
-      const { zmin, zmax } = fillZ2D(gridH, nxH, nyH, zH);
+      const { zmin, zmax } = fillZ2D(flat, gridH.nx, gridH.ny, gridH.z);
 
       const span = Math.max(1e-12, (zmax - zmin));
       const eps = 1e-12 * span + 1e-12;
 
-      let zShade = zH;
+      let zShade = gridH.z;
       let shadeTitle = "J";
       if (logShade.checked) {
-        fillLogShift(zH, zHlog, zmin, eps);
-        zShade = zHlog;
+        fillLogShift(gridH.z, gridH.zlog, zmin, eps);
+        zShade = gridH.zlog;
         shadeTitle = "log(J − Jmin + ε)";
       }
 
       const pLo = clipToggle.checked ? 0.02 : 0.0;
       const pHi = clipToggle.checked ? 0.98 : 1.0;
+
       let zminShade = approxPercentileFinite2D(zShade, pLo, 6);
       let zmaxShade = approxPercentileFinite2D(zShade, pHi, 6);
       if (!(zmaxShade > zminShade + 1e-12)) zmaxShade = zminShade + 1e-6;
@@ -618,7 +685,8 @@ async function main() {
 
       // footprints (optional)
       if (showFootprints.checked) {
-        const c1x = -0.5 * b, c2x = +0.5 * b;
+        const c1x = -0.5 * b;
+        const c2x = +0.5 * b;
         await Plotly.relayout(gd, {
           shapes: [
             { type: "circle", xref: "x", yref: "y", x0: c1x - a, x1: c1x + a, y0: -a, y1: +a, line: { width: 2, color: "rgba(255,255,255,0.85)" }, fillcolor: "rgba(0,0,0,0)" },
@@ -629,16 +697,27 @@ async function main() {
         await Plotly.relayout(gd, { shapes: [] });
       }
 
-      scheduleContours(0);
+      // If live updates are enabled, contours are usually the expensive part.
+      // A small delay makes slider-dragging feel much smoother.
+      scheduleContours(contourDelayMs);
+
     } finally {
       isRendering = false;
       setStatus("ready");
-      if (needsRerender) { needsRerender = false; renderFull(); }
+      if (needsRerender) {
+        needsRerender = false;
+        renderFull({ contourDelayMs: 0 }).catch(console.error);
+      }
     }
   }
 
-  // ---- Drag UX (still buttery) ----
-  function beginBDrag() {
+  // Debounced live rendering (used only when the "Live updates" toggle is on).
+  const requestLiveRender = debounce(() => {
+    renderFull({ contourDelayMs: 140 }).catch(console.error);
+  }, 80);
+
+  // -------------------- b-slider drag UX --------------------
+  function beginBDragGhost() {
     noteUserActivity();
     updateReadouts();
     ghostActive = true;
@@ -649,31 +728,108 @@ async function main() {
     setStatus("dragging…");
   }
 
-  function duringBDrag() {
+  function duringBDragGhost() {
     noteUserActivity();
     updateReadouts();
     if (!ghostActive) return;
     updateGhost(ghost, gd, a, clampMinB(Number(bSlider.value), a));
   }
 
-  function endBDrag() {
+  function endBDragGhost() {
     noteUserActivity();
     updateReadouts();
     ghostActive = false;
     setGhost(ghost, false);
-    renderFull();
+    renderFull({ contourDelayMs: 0 }).catch(console.error);
   }
 
-  // Events
-  bSlider.addEventListener("pointerdown", beginBDrag);
-  bSlider.addEventListener("mousedown", beginBDrag);
-  bSlider.addEventListener("input", duringBDrag);
-  bSlider.addEventListener("change", endBDrag);
+  function finishBPointerDrag() {
+    if (!bDragging) return;
+    bDragging = false;
 
-  zoomSlider.addEventListener("input", () => { noteUserActivity(); updateReadouts(); setStatus("dragging…"); });
-  zoomSlider.addEventListener("change", () => { noteUserActivity(); updateReadouts(); renderFull(); });
+    // We handle the end-of-drag render ourselves; suppress the subsequent change event.
+    suppressNextBChange = true;
 
-  ncontSlider.addEventListener("input", () => { noteUserActivity(); updateReadouts(); setStatus("adjusting…"); });
+    if (liveContours.checked) {
+      noteUserActivity();
+      updateReadouts();
+      setStatus("rendering…");
+      renderFull({ contourDelayMs: 0 }).catch(console.error);
+    } else {
+      endBDragGhost();
+    }
+  }
+
+  // pointer-based drag (primary interaction path)
+  bSlider.addEventListener("pointerdown", (e) => {
+    if (e.button !== undefined && e.button !== 0) return; // left click only
+    bDragging = true;
+    suppressNextBChange = false;
+
+    try { bSlider.setPointerCapture(e.pointerId); } catch {}
+
+    if (liveContours.checked) {
+      noteUserActivity();
+      updateReadouts();
+      cancelRefine();
+      setGhost(ghost, false);
+      requestLiveRender();
+      setStatus("dragging…");
+    } else {
+      beginBDragGhost();
+    }
+  });
+
+  bSlider.addEventListener("pointerup", finishBPointerDrag);
+  bSlider.addEventListener("pointercancel", finishBPointerDrag);
+  bSlider.addEventListener("lostpointercapture", finishBPointerDrag);
+
+  // input fires continuously (mouse drag + keyboard repeat)
+  bSlider.addEventListener("input", () => {
+    if (liveContours.checked) {
+      noteUserActivity();
+      updateReadouts();
+      setStatus("dragging…");
+      requestLiveRender();
+      return;
+    }
+    if (bDragging) duringBDragGhost();
+    else { noteUserActivity(); updateReadouts(); }
+  });
+
+  // change fires on commit (keyboard / programmatic changes)
+  bSlider.addEventListener("change", () => {
+    if (suppressNextBChange) { suppressNextBChange = false; return; }
+    if (bDragging) return;
+    noteUserActivity();
+    updateReadouts();
+    renderFull({ contourDelayMs: 0 }).catch(console.error);
+  });
+
+  // -------------------- Other controls --------------------
+  zoomSlider.addEventListener("input", () => {
+    noteUserActivity();
+    updateReadouts();
+    setStatus("dragging…");
+    if (liveContours.checked) requestLiveRender();
+  });
+  zoomSlider.addEventListener("change", () => {
+    noteUserActivity();
+    updateReadouts();
+    renderFull({ contourDelayMs: 0 }).catch(console.error);
+  });
+
+  const requestLiveContoursOnly = debounce(() => {
+    cancelRefine();
+    hideContoursNow().then(() => scheduleContours(0));
+  }, 90);
+
+  ncontSlider.addEventListener("input", () => {
+    noteUserActivity();
+    updateReadouts();
+    setStatus("adjusting…");
+    if (liveContours.checked) requestLiveContoursOnly();
+  });
   ncontSlider.addEventListener("change", async () => {
     noteUserActivity();
     updateReadouts();
@@ -686,26 +842,54 @@ async function main() {
     noteUserActivity();
     cancelRefine();
     await hideContoursNow();
-    scheduleContours(0);
+    scheduleContours(liveContours.checked ? 140 : 0);
   });
 
-  showFootprints.addEventListener("change", () => { noteUserActivity(); renderFull(); });
-  logShade.addEventListener("change", () => { noteUserActivity(); cancelRefine(); renderFull(); });
-  clipToggle.addEventListener("change", () => { noteUserActivity(); cancelRefine(); renderFull(); });
-  liveContours.addEventListener("change", () => { noteUserActivity(); cancelRefine(); renderFull(); });
+  showFootprints.addEventListener("change", () => {
+    noteUserActivity();
+    renderFull({ contourDelayMs: 0 }).catch(console.error);
+  });
 
+  logShade.addEventListener("change", () => {
+    noteUserActivity();
+    cancelRefine();
+    renderFull({ contourDelayMs: liveContours.checked ? 140 : 0 }).catch(console.error);
+  });
+
+  clipToggle.addEventListener("change", () => {
+    noteUserActivity();
+    cancelRefine();
+    renderFull({ contourDelayMs: liveContours.checked ? 140 : 0 }).catch(console.error);
+  });
+
+  liveContours.addEventListener("change", () => {
+    // No immediate heavy work here; just re-render on next interaction.
+    noteUserActivity();
+    cancelRefine();
+  });
+
+  // Resize
+  let resizeTimer = null;
   window.addEventListener("resize", () => {
     noteUserActivity();
-    clearTimeout(window.__rz);
+    clearTimeout(resizeTimer);
     cancelRefine();
     setOverlayViewBox(ghost, gd);
-    if (ghostActive) duringBDrag();
-    window.__rz = setTimeout(renderFull, 280);
+    if (ghostActive) updateGhost(ghost, gd, a, clampMinB(Number(bSlider.value), a));
+    resizeTimer = setTimeout(() => renderFull({ contourDelayMs: 0 }).catch(console.error), 280);
   });
+
+  // Cleanup
+  function cleanup() {
+    try { refineWorker.terminate(); } catch {}
+    try { mod._free(gridH.ptr); } catch {}
+    try { mod._free(gridC.ptr); } catch {}
+  }
+  window.addEventListener("beforeunload", cleanup);
 
   // First render
   updateReadouts();
-  await renderFull();
+  await renderFull({ contourDelayMs: 0 });
 }
 
 main().catch((e) => {
