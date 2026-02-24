@@ -1,0 +1,1 @@
+emcc flux_pair.c -O3 -s WASM=1 -s MODULARIZE=1 -s EXPORT_ES6=1 -s ENVIRONMENT=web  -s EXPORTED_FUNCTIONS='["_fill_flux_pair","_malloc","_free"]'   -s EXPORTED_RUNTIME_METHODS='["cwrap","wasmMemory"]'  -o flux_pair.mjs

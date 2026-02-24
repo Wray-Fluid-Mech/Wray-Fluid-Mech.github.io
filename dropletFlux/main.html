@@ -1,2 +1,40 @@
-<canvas id="plot" style="border:1px solid #ccc;"></canvas>
-<script type="module" src="./main.js"></script>
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Two-droplet flux DensityPlot</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 18px; }
+    #controls { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .control { display: flex; gap: 10px; align-items: center; }
+    label { white-space: nowrap; }
+    input[type="range"] { width: 320px; }
+    #plot { border: 1px solid #ccc; max-width: 100%; height: auto; }
+    .mono { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <div class="control">
+      <label for="b">Separation b</label>
+      <input id="b" type="range" min="2.02" max="6.0" step="0.01" value="2.25">
+      <span id="bVal" class="mono"></span>
+    </div>
+
+    <div class="control">
+      <label for="clip">Clip</label>
+      <input id="clip" type="range" min="0.85" max="0.999" step="0.001" value="0.97">
+      <span id="clipVal" class="mono"></span>
+    </div>
+
+    <div class="control">
+      <label><input id="log" type="checkbox" checked> Log scale</label>
+    </div>
+  </div>
+
+  <canvas id="plot"></canvas>
+
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
