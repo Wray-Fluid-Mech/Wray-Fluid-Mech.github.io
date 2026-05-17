@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Droplet Forward Problem Visualisation</title>
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #f5f5f5;
+        color: #333;
+      }
+      header {
+        background: #2c3e50;
+        color: #fff;
+        padding: 1rem 2rem;
+      }
+      header h1 { font-size: 1.4rem; }
+      #app {
+        max-width: 1300px;
+        margin: 0 auto;
+        padding: 1.5rem;
+      }
+      #status {
+        margin-bottom: 1rem;
+        padding: 0.5rem 1rem;
+        border-radius: 4px;
+        font-size: 0.9rem;
+      }
+      #status.ok { background: #d4edda; color: #155724; }
+      #status.warn { background: #fff3cd; color: #856404; }
+      #status.err { background: #f8d7da; color: #721c24; }
+      .panel {
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        padding: 1rem;
+        margin-bottom: 1rem;
+      }
+      .panel h2 {
+        font-size: 1rem;
+        margin-bottom: 0.6rem;
+        color: #2c3e50;
+      }
+      .slider-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 0.6rem;
+      }
+      .slider-row {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.85rem;
+      }
+      .slider-row label {
+        white-space: nowrap;
+        min-width: 2.4em;
+        font-weight: 600;
+      }
+      .slider-row input[type=range] {
+        flex: 1;
+        height: 6px;
+      }
+      .slider-row .val {
+        min-width: 4em;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        color: #555;
+      }
+      #kernel-info {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+        gap: 0.3rem;
+        font-size: 0.82rem;
+        margin-bottom: 0;
+      }
+      #kernel-info .param { color: #555; }
+      #plots {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.5rem;
+        margin-bottom: 1.5rem;
+      }
+      @media (max-width: 900px) {
+        #plots { grid-template-columns: 1fr; }
+      }
+      .plot-container {
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        overflow: hidden;
+      }
+      .plot-container .plot-title {
+        padding: 0.6rem 1rem;
+        font-weight: 600;
+        background: #ecf0f1;
+        border-bottom: 1px solid #ddd;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .plot-box { width: 100%; height: 420px; }
+      #fullwidth-plot { grid-column: 1 / -1; }
+      #regression-checks ul {
+        list-style: none;
+        padding: 0;
+      }
+      #regression-checks li {
+        padding: 0.25rem 0;
+        font-size: 0.85rem;
+      }
+      .pass { color: #27ae60; }
+      .fail { color: #e74c3c; }
+      #solve-time {
+        font-size: 0.8rem;
+        color: #888;
+        font-weight: 400;
+      }
+    </style>
+    <script type="module" crossorigin src="/droplet-forward/assets/index-BNyD3BHP.js"></script>
+  </head>
+  <body>
+    <header>
+      <h1>Droplet Forward Problem</h1>
+    </header>
+    <div id="app">
+      <div id="status"></div>
+
+      <div class="panel" id="kernel-panel">
+        <h2>Velocity Info</h2>
+        <div id="kernel-info"></div>
+      </div>
+
+      <div class="panel" id="slider-panel">
+        <h2>Key Parameters</h2>
+        <div class="slider-grid">
+          <div class="slider-row">
+            <label>&beta;&#x2081;</label>
+            <input type="range" id="beta1" min="0" max="6.28319" step="0.001" value="3.552" />
+              <span class="val" id="beta1-val">3.552</span>
+          </div>
+          <div class="slider-row">
+            <label>Q&#x2081;</label>
+            <input type="range" id="q1" min="0" max="1" step="0.001" value="0.5" />
+            <span class="val" id="q1-val">0.500</span>
+          </div>
+          <div class="slider-row">
+            <label>&beta;&#x2082;</label>
+            <input type="range" id="beta2" min="0" max="6.28319" step="0.001" value="4.919" />
+              <span class="val" id="beta2-val">4.919</span>
+          </div>
+          <div class="slider-row">
+            <label>Q&#x2082;</label>
+            <input type="range" id="q2" min="0" max="1" step="0.001" value="0.5" />
+            <span class="val" id="q2-val">0.500</span>
+          </div>
+          <div class="slider-row">
+            <label>&beta;&#x2083;</label>
+            <input type="range" id="beta3" min="0" max="6.28319" step="0.001" value="1.285" />
+              <span class="val" id="beta3-val">1.285</span>
+          </div>
+          <div class="slider-row">
+            <label>Q&#x2083;</label>
+            <input type="range" id="q3" min="0" max="1" step="0.001" value="0.5" />
+            <span class="val" id="q3-val">0.500</span>
+          </div>
+          <div class="slider-row">
+            <label>&beta;&#x2084;</label>
+            <input type="range" id="beta4" min="0" max="6.28319" step="0.001" value="1.942" />
+              <span class="val" id="beta4-val">1.942</span>
+          </div>
+          <div class="slider-row">
+            <label>Q&#x2084;</label>
+            <input type="range" id="q4" min="0" max="1" step="0.001" value="0.5" />
+            <span class="val" id="q4-val">0.500</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="plots">
+        <div class="plot-container">
+          <div class="plot-title">Final deposit D(&theta;) <span id="solve-time"></span></div>
+          <div class="plot-box" id="plot-deposit"></div>
+        </div>
+        <div class="plot-container">
+          <div class="plot-title">Streamlines (depth averaged)</div>
+          <div class="plot-box" id="plot-trajectories"></div>
+        </div>
+      </div>
+
+      <div class="panel" id="regression-checks">
+        <h2>Validation checks</h2>
+        <ul id="check-list"><li>No data loaded yet</li></ul>
+      </div>
+    </div>
+
+    <script src="https://cdn.plot.ly/plotly-2.35.3.min.js"></script>
+  </body>
+</html>
